@@ -1,0 +1,5 @@
+esp-idf-main/build/
+sdkconfig
+sdkconfig.old
+.devcontainer/
+.vscode/
