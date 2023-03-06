@@ -1,13 +1,16 @@
+//#include "esp_types.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "Adafruit_VL53L0X.h"
 #include "freertos/semphr.h"
+//#include "stdatomic.h"
 // Task speeds
 #define MOTOR_UPDATE_SPEED 100 //ms
-#define SENSOR_UPDATE_SPEED 500 //ms
-#define BRAIN_UPDATE_SPEED 500 //ms
-#define CLICKS_PER_ROT 75 //encoder counts per rotation of wheel
-#define WHEEL_DISTANCE_AROUND 377 //mm per rotation
+#define SENSOR_UPDATE_SPEED 100 //ms
+#define BRAIN_UPDATE_SPEED 100 //ms
+#define CLICKS_PER_ROT 60 //encoder counts per rotation of wheel
+#define WHEEL_DISTANCE_AROUND 188 //mm per rotation
+#define DISTANCE_TO_FRONT_WALL 100
 // sensor addresses
 #define LOX1_ADDRESS 0x30
 #define LOX2_ADDRESS 0x31
@@ -16,6 +19,7 @@
 #define SHT_LOX1 15
 #define SHT_LOX2 2
 #define SHT_LOX3 4
+
 #define LEDC_FREQ 10000
 #define LEDC_RES 8
 
@@ -54,6 +58,7 @@ class SimplePID{
     eprev = e;
   }
 };
+
 //set motor speeds
 void setMotor(int dir, int pwmVal, int chan, int in1, int in2){
   ledcWrite(chan,pwmVal);
@@ -77,6 +82,7 @@ int distanceToCounts(int distanceMM) { // converts distance from sensor into enc
 int distance[3]; //holds sensor distance
 int target[2]; //holds motor targets
 
+SemaphoreHandle_t xSensorInitDone = NULL;//notify brain task that sensor setup is done. replace with notification ideally
 SemaphoreHandle_t xDistanceAvailable = NULL; //protect distance[3]
 SemaphoreHandle_t xTargetReadable = NULL; //protect target[2]
 static portMUX_TYPE xLeftEncoder; //ISR spinlocks, https://esp32.com/viewtopic.php?t=12621
@@ -88,9 +94,11 @@ const int encb[2] = {32,34};
 const int pwm[2] = {13,25}; //(PWMB, PWMA)
 const int in1[2] = {12,27};
 const int in2[2] = {14,26};
-
+//Sensor setup stuff
+//VL53L0X_RangingMeasurementData_t measure_temp[3]; // array to hold temporary ranges before semaphore-protected copying into distances
+//int dist_temp[3];//array to hold actual distances before copy, is "volatile"
 // tasks
-void TaskReadSensor( void *pvParameters); //continuously. block with semaphore
+void TaskReadSensor( void *pvParameters); //continuously. block with semaphore. NOTE: no longer a task due to I2C getting angry at Tasks. Now in loop()
 void TaskCommandMotors( void *pvParameters); //do PID calc
 void TaskBrainControl(void *pvParameters); //use TaskReadSensor data to pass commandings to TaskCommandMotors
 
@@ -102,11 +110,12 @@ void setup() {
     ; // wait for serial port to connect.
   }
   printf("Init Start\n");
+  xSensorInitDone = xSemaphoreCreateMutex();
   xDistanceAvailable = xSemaphoreCreateMutex(); // or xSemaphoreCreateBinary(); 
   xTargetReadable = xSemaphoreCreateMutex();
   spinlock_initialize(&xLeftEncoder);
   spinlock_initialize(&xRightEncoder);
-  disableCore0WDT(); // disable pesky watchdog. for some reason sensor init takes forever, which means watchdog kills it before it's done
+  // disableCore0WDT(); // disable pesky watchdog. for some reason sensor init takes forever, which means watchdog kills it before it's done
   // Now set up tasks to run independently.
   printf("Create Tasks\n");
   xTaskCreate(
@@ -135,19 +144,23 @@ void setup() {
 }
 
 void loop() {
-  //empty, all of the processing is done in the tasks
-  delay(1000);
-  /*Keeping the Arduino loop() empty, will definately trigger the wdt, because it isn't really "empty", because the loop() function is internally wrapped in an infinite loop, so the CPU consumption would actually shoot to 100% without doing anything useful. That is what is triggering the watchdog. The GET process seems to be happening asynchronously, so it is not blocking the loop() from executing. */
+  vTaskDelay(100/portTICK_PERIOD_MS); // empty loop
 }
+
 void TaskReadSensor(void *pvParameters) {
+  xSemaphoreTake(xSensorInitDone, portMAX_DELAY);
+  printf("Sensor init start\n");
   (void) pvParameters;
   VL53L0X_RangingMeasurementData_t measure_temp[3]; // array to hold temporary ranges before semaphore-protected copying into distances
   int dist_temp[3];//array to hold actual distances before copy
-  printf("Sensor init start\n");
   // objects for the vl53l0x
   Adafruit_VL53L0X lox1 = Adafruit_VL53L0X();
   Adafruit_VL53L0X lox2 = Adafruit_VL53L0X();
   Adafruit_VL53L0X lox3 = Adafruit_VL53L0X();
+  // do sensor init stuff
+  pinMode(SHT_LOX1, OUTPUT);
+  pinMode(SHT_LOX2, OUTPUT);
+  pinMode(SHT_LOX3, OUTPUT);
   // all reset
   digitalWrite(SHT_LOX1, LOW);    
   digitalWrite(SHT_LOX2, LOW);
@@ -163,7 +176,7 @@ void TaskReadSensor(void *pvParameters) {
   digitalWrite(SHT_LOX2, LOW);
   digitalWrite(SHT_LOX3, LOW);
   printf("Sensor init LOX1\n");
-  // initing LOX1
+  // initing LOX1n                              
   if(!lox1.begin(LOX1_ADDRESS)) {
     printf("Failed to boot first VL53L0X\n");
     while(1);
@@ -192,8 +205,8 @@ void TaskReadSensor(void *pvParameters) {
   }
   printf("Sensor finish LOX3\n");
   printf("Sensor init done\n");
+  xSemaphoreGive(xSensorInitDone);
   for (;;) {
-    printf("SENSOR LOOP\n");
     //infinite reading loop
     lox1.rangingTest(&measure_temp[0], false);
     lox2.rangingTest(&measure_temp[1], false);
@@ -221,6 +234,7 @@ void TaskReadSensor(void *pvParameters) {
   }
 }
 
+
 void TaskCommandMotors(void *pvParameters) {
   printf("Init motors start\n");
   // Globals
@@ -238,7 +252,7 @@ void TaskCommandMotors(void *pvParameters) {
     pinMode(encb[k],INPUT);
     pinMode(in1[k],OUTPUT);
     pinMode(in2[k],OUTPUT);
-    pid[k].setParams(1,0,0,255);
+    pid[k].setParams(1,4,0,255);
   }
   //ATTACH INTERRUPTS SOMEWHERE
   attachInterrupt(digitalPinToInterrupt(enca[0]), readEncoderL, RISING);
@@ -247,7 +261,8 @@ void TaskCommandMotors(void *pvParameters) {
   for (;;) {
     //set target position
     xSemaphoreTake(xDistanceAvailable, portMAX_DELAY);
-    memcpy(target_internal, target, sizeof(target[0])*2);
+    target_internal[0] = -target[0];
+    target_internal[1] = target[1];
     xSemaphoreGive(xDistanceAvailable);
     //time difference
     long currT = micros();
@@ -295,19 +310,34 @@ void TaskBrainControl(void *pvParameters) {
   printf("Init Brain start\n");
   int localTarget[2];
   int localMeasures[3];
+  vTaskDelay(2000/portTICK_PERIOD_MS);
+  xSemaphoreTake(xSensorInitDone, portMAX_DELAY);
   printf("Init Brain done\n");
   for (;;) {
+    //read the position
+    int pos[2]; // hold current position
+    portENTER_CRITICAL(&xLeftEncoder);
+    pos[0] = -posi[0];//safely read left encoder
+    portEXIT_CRITICAL(&xLeftEncoder);
+    portENTER_CRITICAL(&xRightEncoder);
+    pos[1] = posi[1];//safely read right encoder
+    portEXIT_CRITICAL(&xRightEncoder);
     //set motor targets to front sensor distance - 100mm
     // get sensor values
     xSemaphoreTake(xDistanceAvailable, portMAX_DELAY);
     memcpy(localMeasures, distance, sizeof(distance[0])*3);
     xSemaphoreGive(xDistanceAvailable);
     //calculated targets
-    localTarget[0] = distanceToCounts(localMeasures[1]-100);
-    localTarget[1] = distanceToCounts(localMeasures[1]-100);
+    localTarget[0] = pos[0]+distanceToCounts(localMeasures[1]-DISTANCE_TO_FRONT_WALL);
+    localTarget[1] = pos[1]+distanceToCounts(localMeasures[1]-DISTANCE_TO_FRONT_WALL);
+    printf("Current %d %d\n Add %d \n Targets %d %d \n", pos[0], pos[1], distanceToCounts(localMeasures[1]-30), localTarget[0], localTarget[1]);
+
     //set targets
     xSemaphoreTake(xTargetReadable, portMAX_DELAY);
-    memcpy(target, localTarget, sizeof(localTarget[0]*2));
+    //memcpy(target, localTarget, sizeof(localTarget[0]*2));
+    target[0] = localTarget[0];
+    target[1] = localTarget[1];
+    //printf("Target %d %d \n Internal %d %d \n", target[0], target[1], localTarget[0], localTarget[1]);
     xSemaphoreGive(xTargetReadable);
     // output things
     //printf("Distance: %d Target: %d\n", localMeasures[1], localTarget[0]);
@@ -318,8 +348,6 @@ void TaskBrainControl(void *pvParameters) {
 /*
 TODO
 ----
-- Fix Sensor init task being slow as shit. possibly need to use pololu library
-- Fix watchdog timeout, probably caused by slow sensor library
 - Combine all startups / semaphore shit etc. might fix slow sensor lib
 - Test and compile, gl|hf
 */
