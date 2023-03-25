@@ -5,14 +5,16 @@
 #include "config.h"
 #include "Adafruit_VL53L0X.h"
 
-class Micromouse {
+class MicroMouse {
   private:
     // current encoder positions
     volatile int _posi_l = 0;
     volatile int _posi_r = 0;
     // current encoder positions, safe
-    int pos_l;
-    int pos_r;
+    int _pos_l;
+    int _pos_r;
+    // current facing direction
+    int _facing;
     // sensor objects for the vl53l0x ToF sensors
     Adafruit_VL53L0X _lox_l;
     Adafruit_VL53L0X _lox_f;
@@ -26,6 +28,10 @@ class Micromouse {
     // interrupt function for encoders to set motor positions
     void _readEncoderL();
     void _readEncoderR();
+    //function to handle PID calculations
+    void _tickPIDcentering();
+    // function to move mouse in a straight line by x clicks based on encoder clicks
+    void _forward(int distance);
   public:
     // set-up sensors and mouse hardware
     // start measurement loop
