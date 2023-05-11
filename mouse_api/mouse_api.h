@@ -19,10 +19,14 @@ class MicroMouse {
     Adafruit_VL53L0X _lox_l;
     Adafruit_VL53L0X _lox_f;
     Adafruit_VL53L0X _lox_r;
-    // sensor reading objects
-    VL53L0X_RangingMeasurementData_t _measure_l;
-    VL53L0X_RangingMeasurementData_t _measure_f;
-    VL53L0X_RangingMeasurementData_t _measure_r;
+    // semaphores for readings
+    SemaphoreHandle_t _x_dist_l;
+    SemaphoreHandle_t _x_dist_f;
+    SemaphoreHandle_t _x_dist_r;
+    // measured distances
+    int _dist_l;
+    int _dist_f;
+    int _dist_r;
     // wrapper for motor speed setting
     void _setMotorSpeeds(int pwm_l, int pwm_r);
     // interrupt function for encoders to set motor positions
@@ -32,6 +36,8 @@ class MicroMouse {
     void _tickPIDcentering();
     // function to move mouse in a straight line by x clicks based on encoder clicks
     void _forward(int distance);
+    //sensor loop
+    void _TaskReadSensor();
   public:
     // set-up sensors and mouse hardware
     // start measurement loop

@@ -1,8 +1,82 @@
 #include "mouse_api.h"
 
 void MicroMouse::begin() {
+  printf("Init Start\n");
   // setup sensors
+  // do sensor init stuff
+  pinMode(SHT_LOX1, OUTPUT);
+  pinMode(SHT_LOX2, OUTPUT);
+  pinMode(SHT_LOX3, OUTPUT);
+  // all reset
+  digitalWrite(SHT_LOX1, LOW);
+  digitalWrite(SHT_LOX2, LOW);
+  digitalWrite(SHT_LOX3, LOW);
+  vTaskDelay(10 / portTICK_PERIOD_MS);
+  // all unreset
+  digitalWrite(SHT_LOX1, HIGH);
+  digitalWrite(SHT_LOX2, HIGH);
+  digitalWrite(SHT_LOX3, HIGH);
+  vTaskDelay(10 / portTICK_PERIOD_MS);
+  // activating LOX1 and resetting LOX2 ---------------------------------------------------
+  digitalWrite(SHT_LOX1, HIGH);
+  digitalWrite(SHT_LOX2, LOW);
+  digitalWrite(SHT_LOX3, LOW);
+  printf("Sensor init LOX1\n");
+  // initing LOX1n
+  if (!_lox_l.begin(LOX1_ADDRESS))
+  {
+    printf("Failed to boot first VL53L0X\n");
+    while (1)
+      ;
+  }
+  printf("Sensor finish LOX1\n");
+  vTaskDelay(10 / portTICK_PERIOD_MS);
+  // activating LOX2 ----------------------------------------------------------------------
+  digitalWrite(SHT_LOX2, HIGH);
+  digitalWrite(SHT_LOX3, LOW);
+  vTaskDelay(10 / portTICK_PERIOD_MS);
+  // initing LOX2
+  printf("Sensor init LOX2\n");
+  if (!_lox_f.begin(LOX2_ADDRESS))
+  {
+    printf("Failed to boot second VL53L0X\n");
+    // while(1);
+  }
+  printf("Sensor finish LOX2\n");
+  // activating LOX3 ----------------------------------------------------------------------
+  digitalWrite(SHT_LOX3, HIGH);
+  vTaskDelay(10 / portTICK_PERIOD_MS);
+  // initing LOX2
+  printf("Sensor init LOX3\n");
+  if (!_lox_r.begin(LOX3_ADDRESS))
+  {
+    printf("Failed to boot third VL53L0X\n");
+    // while(1);
+  }
+  _lox_l.startRangingContinuous();
+  _lox_f.startRangingContinuous();
+  _lox_r.startRangingContinuous();
+  printf("Sensor finish LOX3\n");
+  printf("Sensor init done\n");
   // start measurement thread
+  xTaskCreate(
+    this->TaskSensor, 
+    "SENSOR TASK",
+    2048,
+    NULL,
+    1,
+    NULL
+  );
+}
+
+void MicroMouse::_TaskReadSensor(void *pvParameters) {
+  if (_lox_l.isRangeComplete()){
+    //sem
+    _lox_l.readRange();
+  }
+   //read sensor
+   //get semaphore
+   //write
 }
 
 void MicroMouse::setMotorSpeeds(int pwm_l, int pwm_r) {
